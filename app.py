@@ -109,17 +109,44 @@ with col2:
         "11-13-2025 12:00:00, 11-13-2025 17:00:00"
     )
 
-st.info("Tip: Enter each availability window on its own line as:  `MM-DD-YYYY HH:MM:SS, MM-DD-YYYY HH:MM:SS`")
+st.info(
+    "Tip: Enter each availability window on its own line as:  "
+    "`MM-DD-YYYY HH:MM:SS, MM-DD-YYYY HH:MM:SS`"
+)
 
 if st.button("Optimize", type="primary"):
     START = datetime.combine(start_date, start_time)
     END   = datetime.combine(end_date, end_time)
 
     devices = []
-    if ev_on: devices.append({"name":"EV", "P_kw":ev_p, "hours":ev_h, "windows":_parse_window_lines(ev_win)})
-    if dr_on: devices.append({"name":"Dryer", "P_kw":dr_p, "hours":dr_h, "windows":_parse_window_lines(dr_win)})
-    if dw_on: devices.append({"name":"Dishwasher", "P_kw":dw_p, "hours":dw_h, "windows":_parse_window_lines(dw_win)})
-    if wa_on: devices.append({"name":"WashingMachine", "P_kw":wa_p, "hours":wa_h, "windows":_parse_window_lines(wa_win)})
+    if ev_on:
+        devices.append({
+            "name": "EV",
+            "P_kw": ev_p,
+            "hours": ev_h,
+            "windows": _parse_window_lines(ev_win)
+        })
+    if dr_on:
+        devices.append({
+            "name": "Dryer",
+            "P_kw": dr_p,
+            "hours": dr_h,
+            "windows": _parse_window_lines(dr_win)
+        })
+    if dw_on:
+        devices.append({
+            "name": "Dishwasher",
+            "P_kw": dw_p,
+            "hours": dw_h,
+            "windows": _parse_window_lines(dw_win)
+        })
+    if wa_on:
+        devices.append({
+            "name": "WashingMachine",
+            "P_kw": wa_p,
+            "hours": wa_h,
+            "windows": _parse_window_lines(wa_win)
+        })
 
     # Basic checks
     if not Path(data_file).exists():
@@ -130,7 +157,8 @@ if st.button("Optimize", type="primary"):
         st.error("Please include at least one device.")
     else:
         with st.spinner("Running optimization..."):
-            results_df, schedule_df, pngs, xlsx = run_optimization(
+            # NOTE: run_optimization now returns 5 values, including summary_text
+            results_df, schedule_df, pngs, xlsx, summary_text = run_optimization(
                 DATA_FILE=data_file,
                 START_TIME=START,
                 END_TIME=END,
@@ -158,14 +186,22 @@ if st.button("Optimize", type="primary"):
             st.subheader("Schedule")
             st.dataframe(schedule_df)
 
+            # Plots
             for p in (pngs or []):
                 if p and Path(p).exists():
                     st.image(str(p), use_column_width=True)
 
+            # Download Excel
             if xlsx and Path(xlsx).exists():
                 st.download_button(
-                    "Download Excel (Timeseries + Schedule)",
+                    "Download Excel (Timeseries + Schedule + Summary)",
                     data=open(xlsx, "rb").read(),
                     file_name=Path(xlsx).name,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
+
+            # Detailed summary (text block)
+            if summary_text:
+                st.subheader("Detailed Power & Energy Summary")
+                # st.code keeps monospacing and formatting similar to your CLI output
+                st.code(summary_text)
