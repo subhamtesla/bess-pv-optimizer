@@ -32,7 +32,6 @@ def get_current_slc_conditions():
 
     If anything fails, temp_c and temp_f are None.
     """
-    # Current time in SLC (fallback to UTC if tz not available)
     if SLC_TZ is not None:
         now = datetime.now(SLC_TZ)
     else:
@@ -56,7 +55,6 @@ def get_current_slc_conditions():
                 temp_c = float(t_c)
                 temp_f = temp_c * 9.0 / 5.0 + 32.0
     except Exception:
-        # If the API fails for any reason, just leave temps as None
         pass
 
     return now, temp_c, temp_f
@@ -70,11 +68,10 @@ with st.sidebar:
     house_id = st.text_input(
         "House ID",
         value="",
-        type="password",          # behaves like a password field
-        help="Enter your House ID to access the dashboard."
+        type="password",
+        help="Enter your House ID to access the dashboard.",
     )
 
-# If ID is wrong or empty, stop here
 if house_id != "01592915":
     st.warning("Please enter the valid House ID to access the dashboard.")
     st.stop()
@@ -302,22 +299,97 @@ with left_col:
             else:
                 st.success("Optimization complete.")
 
-                # Small KPIs from results (optional simple ones)
-                k1, k2, k3 = st.columns(3)
-                with k1:
-                    total_load = float(results_df["Total_Load"].sum()) * (
-                        (results_df["Time"].iloc[1] - results_df["Time"].iloc[0])
-                        .total_seconds() / 3600.0
-                    ) if len(results_df) > 1 else 0.0
-                    st.metric("Total Load Demand (kWh)", f"{total_load:.1f}")
-                with k2:
-                    soc_start = results_df["Battery_SOC"].iloc[0]
-                    soc_end   = results_df["Battery_SOC"].iloc[-1]
-                    st.metric("Battery SOC (start → end)", f"{soc_end:.1f} %", f"{soc_end - soc_start:+.1f} %")
-                with k3:
-                    # If summary_text has a "TOTAL ENERGY COST" line, this is nicer,
-                    # but we just show that the summary is available.
-                    st.metric("Summary available", "Yes")
+                # ---------------------------------------------------------
+                # Metric cards (summary boxes at the top of the dashboard)
+                # ---------------------------------------------------------
+                # Step size in hours
+                if len(results_df) >= 2:
+                    step_hours = (
+                        results_df["Time"].iloc[1]
+                        - results_df["Time"].iloc[0]
+                    ).total_seconds() / 3600.0
+                else:
+                    step_hours = 10.0 / 60.0  # fallback 10-min
+
+                # Energies (kWh)
+                total_base_load_energy   = float(results_df["Base_Load"].sum() * step_hours)
+                total_device_load_energy = float(results_df["Device_Load"].sum() * step_hours)
+                total_load_demand_energy = total_base_load_energy + total_device_load_energy
+
+                total_load_curtailed_energy = float(results_df["Load_Curtailment"].sum() * step_hours)
+                total_load_served_energy    = total_load_demand_energy - total_load_curtailed_energy
+
+                total_solar_available_energy = float(results_df["Solar_Available"].sum() * step_hours)
+                total_pv_used_energy         = float(results_df["PV_Used"].sum() * step_hours)
+
+                total_bess_charged_energy    = float(results_df["Charge_Power"].sum() * step_hours)
+                total_bess_discharged_energy = float(results_df["Discharge_Power"].sum() * step_hours)
+
+                grid_import_energy = float(
+                    results_df["Grid_Power"].clip(lower=0).sum() * step_hours
+                )
+                grid_export_energy = float(
+                    (-results_df["Grid_Power"]).clip(lower=0).sum() * step_hours
+                )
+                net_grid_energy    = grid_import_energy - grid_export_energy
+
+                # Percentages
+                load_served_pct = (
+                    100.0 * total_load_served_energy / total_load_demand_energy
+                    if total_load_demand_energy > 0
+                    else 0.0
+                )
+                pv_used_pct = (
+                    100.0 * total_pv_used_energy / total_solar_available_energy
+                    if total_solar_available_energy > 0
+                    else 0.0
+                )
+
+                net_label = "Import" if net_grid_energy > 0 else "Export" if net_grid_energy < 0 else "Balanced"
+
+                # First row of metric cards
+                m1, m2, m3, m4 = st.columns(4)
+                with m1:
+                    st.metric(
+                        "Total Load Served",
+                        f"{total_load_served_energy:.1f} kWh",
+                        f"{load_served_pct:.1f}% of demand",
+                    )
+                with m2:
+                    st.metric(
+                        "Total PV Energy Used",
+                        f"{total_pv_used_energy:.1f} kWh",
+                        f"{pv_used_pct:.1f}% of available",
+                    )
+                with m3:
+                    st.metric(
+                        "Energy Charged (BESS)",
+                        f"{total_bess_charged_energy:.1f} kWh",
+                    )
+                with m4:
+                    st.metric(
+                        "Energy Discharged (BESS)",
+                        f"{total_bess_discharged_energy:.1f} kWh",
+                    )
+
+                # Second row of metric cards
+                g1, g2, g3 = st.columns(3)
+                with g1:
+                    st.metric(
+                        "Total Grid Import",
+                        f"{grid_import_energy:.1f} kWh",
+                    )
+                with g2:
+                    st.metric(
+                        "Total Grid Export",
+                        f"{grid_export_energy:.1f} kWh",
+                    )
+                with g3:
+                    st.metric(
+                        "Net Grid Energy",
+                        f"{net_grid_energy:.1f} kWh",
+                        net_label,
+                    )
 
                 st.markdown("### Timeseries (preview)")
                 st.dataframe(results_df.head(200))
