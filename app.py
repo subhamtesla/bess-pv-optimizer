@@ -61,6 +61,43 @@ def get_current_slc_conditions():
 
 
 # ---------------------------------------------------------
+# Helper: extract TOTAL ENERGY COST from summary_text
+# ---------------------------------------------------------
+def _extract_total_energy_cost(summary_text: str):
+    """
+    Parse the 'TOTAL ENERGY COST' line from the CLI-style summary text.
+
+    Looks for a line like:
+        TOTAL ENERGY COST:           $      1.17
+
+    Returns a float (e.g., 1.17) or None if parsing fails.
+    """
+    if not summary_text:
+        return None
+
+    for line in summary_text.splitlines():
+        if "TOTAL ENERGY COST" in line:
+            # Find the first '$' and parse everything after it as a number
+            idx = line.find("$")
+            if idx == -1:
+                continue
+            num_str = line[idx + 1 :].strip()
+
+            # Strip off anything after a space or '(' (e.g., comments)
+            for sep in [" ", "("]:
+                j = num_str.find(sep)
+                if j != -1:
+                    num_str = num_str[:j]
+            num_str = num_str.replace(",", "")
+            try:
+                return float(num_str)
+            except ValueError:
+                continue
+
+    return None
+
+
+# ---------------------------------------------------------
 # 1) House ID gate (sidebar)
 # ---------------------------------------------------------
 with st.sidebar:
@@ -347,6 +384,9 @@ with left_col:
 
                 net_label = "Import" if net_grid_energy > 0 else "Export" if net_grid_energy < 0 else "Balanced"
 
+                # Total energy cost (from summary_text)
+                total_energy_cost = _extract_total_energy_cost(summary_text)
+
                 # First row of metric cards
                 m1, m2, m3, m4 = st.columns(4)
                 with m1:
@@ -372,8 +412,8 @@ with left_col:
                         f"{total_bess_discharged_energy:.1f} kWh",
                     )
 
-                # Second row of metric cards
-                g1, g2, g3 = st.columns(3)
+                # Second row of metric cards (including Total Energy Cost)
+                g1, g2, g3, g4 = st.columns(4)
                 with g1:
                     st.metric(
                         "Total Grid Import",
@@ -390,6 +430,14 @@ with left_col:
                         f"{net_grid_energy:.1f} kWh",
                         net_label,
                     )
+                with g4:
+                    if total_energy_cost is not None:
+                        st.metric(
+                            "Total Energy Cost",
+                            f"${total_energy_cost:.2f}",
+                        )
+                    else:
+                        st.metric("Total Energy Cost", "N/A")
 
                 st.markdown("### Timeseries (preview)")
                 st.dataframe(results_df.head(200))
