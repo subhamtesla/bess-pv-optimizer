@@ -7,12 +7,59 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, time, date
 from pathlib import Path
+import requests
+
+# Standard-library timezone (Python 3.9+)
+try:
+    from zoneinfo import ZoneInfo
+    SLC_TZ = ZoneInfo("America/Denver")
+except Exception:
+    SLC_TZ = None
 
 # Import optimizer from the SAME folder as this app.py
 from optimizer import run_optimization
 
 st.set_page_config(page_title="BESS + PV Optimizer", layout="wide")
 st.title("⚡ BESS + PV Scheduling — Interactive Dashboard")
+
+# ---------------------------------------------------------
+# Helper: get current time & temperature in Salt Lake City
+# ---------------------------------------------------------
+def get_current_slc_conditions():
+    """
+    Returns (now_dt, temp_c, temp_f)
+
+    If anything fails, temp_c and temp_f are None.
+    """
+    # Current time in SLC (fallback to UTC if tz not available)
+    if SLC_TZ is not None:
+        now = datetime.now(SLC_TZ)
+    else:
+        now = datetime.utcnow()
+
+    temp_c = None
+    temp_f = None
+
+    try:
+        # Salt Lake City approx: 40.7608 N, -111.8910 W
+        url = (
+            "https://api.open-meteo.com/v1/forecast"
+            "?latitude=40.7608&longitude=-111.8910&current_weather=true"
+        )
+        r = requests.get(url, timeout=5)
+        if r.ok:
+            data = r.json()
+            cw = data.get("current_weather", {})
+            t_c = cw.get("temperature")
+            if t_c is not None:
+                temp_c = float(t_c)
+                temp_f = temp_c * 9.0 / 5.0 + 32.0
+    except Exception:
+        # If the API fails for any reason, just leave temps as None
+        pass
+
+    return now, temp_c, temp_f
+
 
 # ---------------------------------------------------------
 # 1) House ID gate
@@ -32,7 +79,30 @@ if house_id != "01592915":
     st.stop()
 
 # ---------------------------------------------------------
-# 2) Rest of sidebar controls (only shown if ID is correct)
+# 2) Top “status bar”: current time & temperature in SLC
+# ---------------------------------------------------------
+now_slc, temp_c, temp_f = get_current_slc_conditions()
+kpi_col1, kpi_col2 = st.columns(2)
+
+with kpi_col1:
+    # Show local time (or UTC if tz not available)
+    time_label = "Current time (Salt Lake City)" if SLC_TZ is not None else "Current time (UTC)"
+    st.metric(time_label, now_slc.strftime("%Y-%m-%d %H:%M:%S"))
+
+with kpi_col2:
+    if temp_f is not None and temp_c is not None:
+        st.metric(
+            "Current temperature (Salt Lake City)",
+            f"{temp_f:.1f} °F",
+            f"{temp_c:.1f} °C",
+        )
+    else:
+        st.metric("Current temperature (Salt Lake City)", "N/A")
+
+st.markdown("---")
+
+# ---------------------------------------------------------
+# 3) Rest of sidebar controls (only shown if ID is correct)
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("Global")
@@ -203,5 +273,4 @@ if st.button("Optimize", type="primary"):
             # Detailed summary (text block)
             if summary_text:
                 st.subheader("Detailed Power & Energy Summary")
-                # st.code keeps monospacing and formatting similar to your CLI output
                 st.code(summary_text)
