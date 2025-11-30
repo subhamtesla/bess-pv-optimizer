@@ -22,6 +22,7 @@ from optimizer import run_optimization
 st.set_page_config(page_title="BESS + PV Optimizer", layout="wide")
 st.title("⚡ BESS + PV Scheduling — Interactive Dashboard")
 
+
 # ---------------------------------------------------------
 # Helper: get current time & temperature in Salt Lake City
 # ---------------------------------------------------------
@@ -62,7 +63,7 @@ def get_current_slc_conditions():
 
 
 # ---------------------------------------------------------
-# 1) House ID gate
+# 1) House ID gate (sidebar)
 # ---------------------------------------------------------
 with st.sidebar:
     st.header("House selection")
@@ -78,6 +79,7 @@ if house_id != "01592915":
     st.warning("Please enter the valid House ID to access the dashboard.")
     st.stop()
 
+
 # ---------------------------------------------------------
 # 2) Top “status bar”: current time & temperature in SLC
 # ---------------------------------------------------------
@@ -85,8 +87,11 @@ now_slc, temp_c, temp_f = get_current_slc_conditions()
 kpi_col1, kpi_col2 = st.columns(2)
 
 with kpi_col1:
-    # Show local time (or UTC if tz not available)
-    time_label = "Current time (Salt Lake City)" if SLC_TZ is not None else "Current time (UTC)"
+    time_label = (
+        "Current time (Salt Lake City)"
+        if SLC_TZ is not None
+        else "Current time (UTC)"
+    )
     st.metric(time_label, now_slc.strftime("%Y-%m-%d %H:%M:%S"))
 
 with kpi_col2:
@@ -101,16 +106,19 @@ with kpi_col2:
 
 st.markdown("---")
 
+
 # ---------------------------------------------------------
-# 3) Rest of sidebar controls (only shown if ID is correct)
+# 3) Sidebar: global settings
 # ---------------------------------------------------------
 with st.sidebar:
-    st.header("Global")
+    st.header("Global settings")
+
     data_file = st.text_input(
         "Excel data file",
         value="data/Load_price_2025.xlsx",
-        help="Must have columns: datetime, Solar, Load, Price"
+        help="Must have columns: datetime, Solar, Load, Price",
     )
+
     start_date = st.date_input("Start date", date(2025, 11, 9))
     start_time = st.time_input("Start time", time(4, 0))
     end_date   = st.date_input("End date", date(2025, 11, 15))
@@ -123,154 +131,217 @@ with st.sidebar:
     bess_e     = st.number_input("BESS energy (kWh)", 0.1, 100.0, 4.44, 0.01)
     bess_soc_lo= st.slider("BESS min SOC", 0.0, 1.0, 0.20, 0.05)
     bess_soc_hi= st.slider("BESS max SOC", 0.0, 1.0, 0.90, 0.05)
-    final_soc_tol = st.number_input("Final SOC tolerance (kWh)", 0.0, 1.0, 0.001, 0.001)
-
-st.subheader("Flexible devices")
-col1, col2 = st.columns(2)
-
-def _parse_window_lines(txt: str):
-    """Parse text area lines as '(start, end)' tuples."""
-    win = []
-    for line in (txt or "").splitlines():
-        if not line.strip():
-            continue
-        parts = [p.strip() for p in line.split(",")]
-        if len(parts) == 2:
-            win.append((parts[0], parts[1]))
-    return win
-
-with col1:
-    st.markdown("**EV charger (Level-2)**")
-    ev_on   = st.checkbox("Include EV", True)
-    ev_p    = st.number_input("EV power (kW)", 0.0, 20.0, 7.7, 0.1, key="evp")
-    ev_h    = st.number_input("EV hours", 0.5, 24.0, 6.0, 0.5, key="evh")
-    ev_win  = st.text_area(
-        "EV windows (one per line: 'MM-DD-YYYY HH:MM:SS, MM-DD-YYYY HH:MM:SS')",
-        "11-11-2025 21:00:00, 11-12-2025 07:00:00"
+    final_soc_tol = st.number_input(
+        "Final SOC tolerance (kWh)", 0.0, 1.0, 0.001, 0.001
     )
 
-    st.markdown("---")
-    st.markdown("**Dishwasher**")
-    dw_on  = st.checkbox("Include Dishwasher", True)
-    dw_p   = st.number_input("Dishwasher power (kW)", 0.0, 5.0, 1.2, 0.1)
-    dw_h   = st.number_input("Dishwasher hours", 0.5, 6.0, 1.5, 0.5)
-    dw_win = st.text_area(
-        "Dishwasher windows",
-        "11-10-2025 18:00:00, 11-10-2025 23:00:00"
+
+# ---------------------------------------------------------
+# 4) Main layout: left = optimization/results, right = devices
+# ---------------------------------------------------------
+left_col, right_col = st.columns([3, 1])
+
+
+# ---------- RIGHT: Flexible devices (in collapsible panels) ----------
+with right_col:
+    st.subheader("Flexible devices")
+
+    st.caption(
+        "Click on a device to configure its power, runtime, "
+        "and available time windows."
     )
 
-with col2:
-    st.markdown("**Clothes dryer**")
-    dr_on  = st.checkbox("Include Dryer", True)
-    dr_p   = st.number_input("Dryer power (kW)", 0.0, 10.0, 4.5, 0.1)
-    dr_h   = st.number_input("Dryer hours", 0.25, 4.0, 0.75, 0.25)
-    dr_win = st.text_area(
-        "Dryer windows",
-        "11-13-2025 13:00:00, 11-13-2025 19:00:00"
+    def _parse_window_lines(txt: str):
+        """Parse text area lines as '(start, end)' tuples."""
+        win = []
+        for line in (txt or "").splitlines():
+            if not line.strip():
+                continue
+            parts = [p.strip() for p in line.split(",")]
+            if len(parts) == 2:
+                win.append((parts[0], parts[1]))
+        return win
+
+    # EV
+    with st.expander("EV charger (Level-2)", expanded=True):
+        ev_on   = st.checkbox("Include EV", True, key="ev_on")
+        ev_p    = st.number_input(
+            "EV power (kW)", 0.0, 20.0, 7.7, 0.1, key="ev_p"
+        )
+        ev_h    = st.number_input(
+            "EV hours", 0.5, 24.0, 6.0, 0.5, key="ev_h"
+        )
+        ev_win  = st.text_area(
+            "EV windows (one per line: 'MM-DD-YYYY HH:MM:SS, MM-DD-YYYY HH:MM:SS')",
+            "11-11-2025 21:00:00, 11-12-2025 07:00:00",
+            key="ev_win",
+        )
+
+    # Dishwasher
+    with st.expander("Dishwasher", expanded=False):
+        dw_on  = st.checkbox("Include Dishwasher", True, key="dw_on")
+        dw_p   = st.number_input(
+            "Dishwasher power (kW)", 0.0, 5.0, 1.2, 0.1, key="dw_p"
+        )
+        dw_h   = st.number_input(
+            "Dishwasher hours", 0.5, 6.0, 1.5, 0.5, key="dw_h"
+        )
+        dw_win = st.text_area(
+            "Dishwasher windows",
+            "11-10-2025 18:00:00, 11-10-2025 23:00:00",
+            key="dw_win",
+        )
+
+    # Dryer
+    with st.expander("Clothes dryer", expanded=False):
+        dr_on  = st.checkbox("Include Dryer", True, key="dr_on")
+        dr_p   = st.number_input(
+            "Dryer power (kW)", 0.0, 10.0, 4.5, 0.1, key="dr_p"
+        )
+        dr_h   = st.number_input(
+            "Dryer hours", 0.25, 4.0, 0.75, 0.25, key="dr_h"
+        )
+        dr_win = st.text_area(
+            "Dryer windows",
+            "11-13-2025 13:00:00, 11-13-2025 19:00:00",
+            key="dr_win",
+        )
+
+    # Washer
+    with st.expander("Washing machine", expanded=False):
+        wa_on  = st.checkbox("Include Washer", True, key="wa_on")
+        wa_p   = st.number_input(
+            "Washer power (kW)", 0.0, 5.0, 0.5, 0.1, key="wa_p"
+        )
+        wa_h   = st.number_input(
+            "Washer hours", 0.25, 4.0, 1.0, 0.25, key="wa_h"
+        )
+        wa_win = st.text_area(
+            "Washer windows",
+            "11-13-2025 12:00:00, 11-13-2025 17:00:00",
+            key="wa_win",
+        )
+
+    st.info(
+        "Each line in a window field should look like:\n\n"
+        "`MM-DD-YYYY HH:MM:SS, MM-DD-YYYY HH:MM:SS`"
     )
 
-    st.markdown("---")
-    st.markdown("**Washing machine**")
-    wa_on  = st.checkbox("Include Washer", True)
-    wa_p   = st.number_input("Washer power (kW)", 0.0, 5.0, 0.5, 0.1)
-    wa_h   = st.number_input("Washer hours", 0.25, 4.0, 1.0, 0.25)
-    wa_win = st.text_area(
-        "Washer windows",
-        "11-13-2025 12:00:00, 11-13-2025 17:00:00"
-    )
 
-st.info(
-    "Tip: Enter each availability window on its own line as:  "
-    "`MM-DD-YYYY HH:MM:SS, MM-DD-YYYY HH:MM:SS`"
-)
+# ---------- LEFT: Optimization + results ----------
+with left_col:
+    st.subheader("Optimization & Results")
 
-if st.button("Optimize", type="primary"):
-    START = datetime.combine(start_date, start_time)
-    END   = datetime.combine(end_date, end_time)
+    run_clicked = st.button("Optimize schedule", type="primary")
 
-    devices = []
-    if ev_on:
-        devices.append({
-            "name": "EV",
-            "P_kw": ev_p,
-            "hours": ev_h,
-            "windows": _parse_window_lines(ev_win)
-        })
-    if dr_on:
-        devices.append({
-            "name": "Dryer",
-            "P_kw": dr_p,
-            "hours": dr_h,
-            "windows": _parse_window_lines(dr_win)
-        })
-    if dw_on:
-        devices.append({
-            "name": "Dishwasher",
-            "P_kw": dw_p,
-            "hours": dw_h,
-            "windows": _parse_window_lines(dw_win)
-        })
-    if wa_on:
-        devices.append({
-            "name": "WashingMachine",
-            "P_kw": wa_p,
-            "hours": wa_h,
-            "windows": _parse_window_lines(wa_win)
-        })
+    if run_clicked:
+        START = datetime.combine(start_date, start_time)
+        END   = datetime.combine(end_date, end_time)
 
-    # Basic checks
-    if not Path(data_file).exists():
-        st.error(f"Data file not found: {data_file}")
-    elif START >= END:
-        st.error("End time must be after Start time.")
-    elif not devices:
-        st.error("Please include at least one device.")
-    else:
-        with st.spinner("Running optimization..."):
-            # NOTE: run_optimization now returns 5 values, including summary_text
-            results_df, schedule_df, pngs, xlsx, summary_text = run_optimization(
-                DATA_FILE=data_file,
-                START_TIME=START,
-                END_TIME=END,
-                DEVICES=devices,
-                GRID_MAX=grid_max,
-                SOLAR_CAPACITY=solar_mult,
-                BESS_P=bess_p,
-                BESS_E=bess_e,
-                BESS_SOC_LO=bess_soc_lo,
-                BESS_SOC_HI=bess_soc_hi,
-                FINAL_SOC_TOL=final_soc_tol,
-            )
+        # Build list of active devices
+        devices = []
+        if ev_on:
+            devices.append({
+                "name": "EV",
+                "P_kw": ev_p,
+                "hours": ev_h,
+                "windows": _parse_window_lines(ev_win),
+            })
+        if dr_on:
+            devices.append({
+                "name": "Dryer",
+                "P_kw": dr_p,
+                "hours": dr_h,
+                "windows": _parse_window_lines(dr_win),
+            })
+        if dw_on:
+            devices.append({
+                "name": "Dishwasher",
+                "P_kw": dw_p,
+                "hours": dw_h,
+                "windows": _parse_window_lines(dw_win),
+            })
+        if wa_on:
+            devices.append({
+                "name": "WashingMachine",
+                "P_kw": wa_p,
+                "hours": wa_h,
+                "windows": _parse_window_lines(wa_win),
+            })
 
-        if results_df is None or results_df.empty:
-            st.error(
-                "Model infeasible or no data in the selected window.\n"
-                "Try raising Grid max power, lowering device power/hours, or relaxing Final SOC tolerance."
-            )
+        # Basic checks
+        if not Path(data_file).exists():
+            st.error(f"Data file not found: {data_file}")
+        elif START >= END:
+            st.error("End time must be after Start time.")
+        elif not devices:
+            st.error("Please include at least one device.")
         else:
-            st.success("Optimization complete.")
-
-            st.subheader("Timeseries (preview)")
-            st.dataframe(results_df.head(200))
-
-            st.subheader("Schedule")
-            st.dataframe(schedule_df)
-
-            # Plots
-            for p in (pngs or []):
-                if p and Path(p).exists():
-                    st.image(str(p), use_column_width=True)
-
-            # Download Excel
-            if xlsx and Path(xlsx).exists():
-                st.download_button(
-                    "Download Excel (Timeseries + Schedule + Summary)",
-                    data=open(xlsx, "rb").read(),
-                    file_name=Path(xlsx).name,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            with st.spinner("Running optimization..."):
+                # run_optimization returns: results_df, schedule_df, pngs, xlsx, summary_text
+                results_df, schedule_df, pngs, xlsx, summary_text = run_optimization(
+                    DATA_FILE=data_file,
+                    START_TIME=START,
+                    END_TIME=END,
+                    DEVICES=devices,
+                    GRID_MAX=grid_max,
+                    SOLAR_CAPACITY=solar_mult,
+                    BESS_P=bess_p,
+                    BESS_E=bess_e,
+                    BESS_SOC_LO=bess_soc_lo,
+                    BESS_SOC_HI=bess_soc_hi,
+                    FINAL_SOC_TOL=final_soc_tol,
                 )
 
-            # Detailed summary (text block)
-            if summary_text:
-                st.subheader("Detailed Power & Energy Summary")
-                st.code(summary_text)
+            if results_df is None or results_df.empty:
+                st.error(
+                    "Model infeasible or no data in the selected window.\n"
+                    "Try raising Grid max power, lowering device power/hours, "
+                    "or relaxing Final SOC tolerance."
+                )
+            else:
+                st.success("Optimization complete.")
+
+                # Small KPIs from results (optional simple ones)
+                k1, k2, k3 = st.columns(3)
+                with k1:
+                    total_load = float(results_df["Total_Load"].sum()) * (
+                        (results_df["Time"].iloc[1] - results_df["Time"].iloc[0])
+                        .total_seconds() / 3600.0
+                    ) if len(results_df) > 1 else 0.0
+                    st.metric("Total Load Demand (kWh)", f"{total_load:.1f}")
+                with k2:
+                    soc_start = results_df["Battery_SOC"].iloc[0]
+                    soc_end   = results_df["Battery_SOC"].iloc[-1]
+                    st.metric("Battery SOC (start → end)", f"{soc_end:.1f} %", f"{soc_end - soc_start:+.1f} %")
+                with k3:
+                    # If summary_text has a "TOTAL ENERGY COST" line, this is nicer,
+                    # but we just show that the summary is available.
+                    st.metric("Summary available", "Yes")
+
+                st.markdown("### Timeseries (preview)")
+                st.dataframe(results_df.head(200))
+
+                st.markdown("### Device schedule")
+                st.dataframe(schedule_df)
+
+                # Plots
+                if pngs:
+                    st.markdown("### Plots")
+                    for p in pngs:
+                        if p and Path(p).exists():
+                            st.image(str(p), use_column_width=True)
+
+                # Download Excel
+                if xlsx and Path(xlsx).exists():
+                    st.download_button(
+                        "Download Excel (Timeseries + Schedule + Summary)",
+                        data=open(xlsx, "rb").read(),
+                        file_name=Path(xlsx).name,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    )
+
+                # Detailed summary (text block)
+                if summary_text:
+                    st.markdown("### Detailed Power & Energy Summary")
+                    st.code(summary_text)
