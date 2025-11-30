@@ -22,12 +22,13 @@ with st.sidebar:
     house_id = st.text_input(
         "House ID",
         value="",
-        help="Enter your house ID (e.g., 01592915)"
+        type="password",          # behaves like a password field
+        help="Enter your House ID to access the dashboard."
     )
 
 # If ID is wrong or empty, stop here
 if house_id != "01592915":
-    st.warning("Please enter the valid House ID (01592915) to access the dashboard.")
+    st.warning("Please enter the valid House ID to access the dashboard.")
     st.stop()
 
 # ---------------------------------------------------------
