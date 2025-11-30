@@ -14,12 +14,30 @@ from optimizer import run_optimization
 st.set_page_config(page_title="BESS + PV Optimizer", layout="wide")
 st.title("⚡ BESS + PV Scheduling — Interactive Dashboard")
 
+# ---------------------------------------------------------
+# 1) House ID gate
+# ---------------------------------------------------------
+with st.sidebar:
+    st.header("House selection")
+    house_id = st.text_input(
+        "House ID",
+        value="",
+        help="Enter your house ID (e.g., 01592915)"
+    )
+
+# If ID is wrong or empty, stop here
+if house_id != "01592915":
+    st.warning("Please enter the valid House ID (01592915) to access the dashboard.")
+    st.stop()
+
+# ---------------------------------------------------------
+# 2) Rest of sidebar controls (only shown if ID is correct)
+# ---------------------------------------------------------
 with st.sidebar:
     st.header("Global")
-    default_path = "data/Load_price_2025.xlsx"
     data_file = st.text_input(
         "Excel data file",
-        value=default_path,
+        value="data/Load_price_2025.xlsx",
         help="Must have columns: datetime, Solar, Load, Price"
     )
     start_date = st.date_input("Start date", date(2025, 11, 9))
@@ -93,7 +111,6 @@ with col2:
 st.info("Tip: Enter each availability window on its own line as:  `MM-DD-YYYY HH:MM:SS, MM-DD-YYYY HH:MM:SS`")
 
 if st.button("Optimize", type="primary"):
-    # Use LOCAL widget values directly (no session_state keys)
     START = datetime.combine(start_date, start_time)
     END   = datetime.combine(end_date, end_time)
 
@@ -127,7 +144,10 @@ if st.button("Optimize", type="primary"):
             )
 
         if results_df is None or results_df.empty:
-            st.error("Model infeasible or no data in the selected window.\nTry raising Grid max power, lowering device power/hours, or relaxing Final SOC tolerance.")
+            st.error(
+                "Model infeasible or no data in the selected window.\n"
+                "Try raising Grid max power, lowering device power/hours, or relaxing Final SOC tolerance."
+            )
         else:
             st.success("Optimization complete.")
 
@@ -137,12 +157,10 @@ if st.button("Optimize", type="primary"):
             st.subheader("Schedule")
             st.dataframe(schedule_df)
 
-            # Show plots if they exist
             for p in (pngs or []):
                 if p and Path(p).exists():
                     st.image(str(p), use_column_width=True)
 
-            # Download Excel if it exists
             if xlsx and Path(xlsx).exists():
                 st.download_button(
                     "Download Excel (Timeseries + Schedule)",
