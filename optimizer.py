@@ -7,6 +7,7 @@
 # - Each flexible device runs a single contiguous block within its windows
 # - Saves a dashboard PNG + one PNG per device; exports Excel
 # - Tightened discharge-start detection; min-run enforced
+# - ADDED: Detailed POWER & ENERGY SUMMARY (and Summary sheet in Excel)
 # =====================================================================
 
 import numpy as np
@@ -107,8 +108,13 @@ def run_optimization(
 ):
     """
     Returns:
-        results_df, schedule_df, png_paths(list[str]), excel_path(str)
-        If infeasible: returns (empty_df, minimal_schedule_df, [], None)
+        results_df    : full time-series results
+        schedule_df   : per-device schedule info
+        png_paths     : list of PNG file paths (dashboard + per-device)
+        excel_path    : path to Excel file (Timeseries + Schedule + Summary sheets)
+        summary_text  : formatted multi-line text with detailed energy summary
+
+        If infeasible: (empty_results_df, minimal_schedule_df, [], None, "status text")
     """
     if PLOTS_DIR is None:
         PLOTS_DIR = Path.cwd()
@@ -154,9 +160,17 @@ def run_optimization(
     df = df.loc[mask].reset_index(drop=True)
     if df.empty:
         empty_results = pd.DataFrame()
-        empty_sched = pd.DataFrame([{"Device":"(no data rows in window)", "Power_kW":0, "Duration_steps":0,
-                                     "Duration_min":0, "Start_time":pd.NaT, "End_time":pd.NaT, "Energy_kWh":0}])
-        return empty_results, empty_sched, [], None
+        empty_sched = pd.DataFrame([{
+            "Device":"(no data rows in window)",
+            "Power_kW":0,
+            "Duration_steps":0,
+            "Duration_min":0,
+            "Start_time":pd.NaT,
+            "End_time":pd.NaT,
+            "Energy_KWh":0
+        }])
+        summary_text = "No data rows in the selected window."
+        return empty_results, empty_sched, [], None, summary_text
 
     # Step size detection
     if len(df) >= 2:
@@ -329,9 +343,17 @@ def run_optimization(
     ok_statuses = {'Optimal', 'Integer Feasible', 'Feasible'}
     if status_str not in ok_statuses:
         empty_results = pd.DataFrame()
-        empty_sched = pd.DataFrame([{"Device":"(infeasible)", "Power_kW":0, "Duration_steps":0,
-                                     "Duration_min":0, "Start_time":pd.NaT, "End_time":pd.NaT, "Energy_kWh":0}])
-        return empty_results, empty_sched, [], None
+        empty_sched = pd.DataFrame([{
+            "Device":"(infeasible)",
+            "Power_kW":0,
+            "Duration_steps":0,
+            "Duration_min":0,
+            "Start_time":pd.NaT,
+            "End_time":pd.NaT,
+            "Energy_KWh":0
+        }])
+        summary_text = f"Optimization infeasible (status = {status_str})."
+        return empty_results, empty_sched, [], None, summary_text
 
     # -----------------------------
     # Results
@@ -365,7 +387,7 @@ def run_optimization(
                 "Duration_min": D * minutes_per_step,
                 "Start_time": start_time,
                 "End_time": end_time,
-                "Energy_kWh": energy_kwh
+                "Energy_KWh": energy_kwh
             })
 
     results = {
@@ -391,8 +413,145 @@ def run_optimization(
 
     # Schedule df
     schedule_df = (pd.DataFrame(schedule_rows) if schedule_rows else
-                   pd.DataFrame([{"Device": "(none)", "Power_kW": 0, "Duration_steps": 0,
-                                  "Duration_min": 0, "Start_time": np.nan, "End_time": np.nan, "Energy_kWh": 0}]))
+                   pd.DataFrame([{
+                       "Device": "(none)",
+                       "Power_kW": 0,
+                       "Duration_steps": 0,
+                       "Duration_min": 0,
+                       "Start_time": np.nan,
+                       "End_time": np.nan,
+                       "Energy_KWh": 0
+                   }]))
+
+    # -----------------------------
+    # DETAILED POWER & ENERGY SUMMARY
+    # -----------------------------
+    obj_val = float(pulp.value(model.objective))
+    eng_cost_val = float(pulp.value(energy_cost))
+
+    # Energies (kWh)
+    total_base_load_energy   = float(np.sum(results_df['Base_Load']) * step_size)
+    total_device_load_energy = float(np.sum(results_df['Device_Load']) * step_size)
+    total_load_demand_energy = total_base_load_energy + total_device_load_energy
+
+    total_load_curtailed_energy = float(np.sum(results_df['Load_Curtailment']) * step_size)
+    total_load_served_energy    = total_load_demand_energy - total_load_curtailed_energy
+
+    total_solar_available_energy = float(np.sum(results_df['Solar_Available']) * step_size)
+    total_pv_used_energy         = float(np.sum(results_df['PV_Used']) * step_size)
+    total_solar_curtailed_energy = float(np.sum(results_df['Solar_Curtailment']) * step_size)
+
+    total_bess_charged_energy    = float(np.sum(results_df['Charge_Power']) * step_size)
+    total_bess_discharged_energy = float(np.sum(results_df['Discharge_Power']) * step_size)
+
+    grid_import_energy = float(np.sum(np.maximum(0, results_df['Grid_Power'])) * step_size)
+    grid_export_energy = float(np.sum(np.maximum(0, -results_df['Grid_Power'])) * step_size)
+    net_grid_energy    = grid_import_energy - grid_export_energy  # positive=net import
+
+    # Costs ($)
+    grid_import_cost      = float(np.sum(np.maximum(0, results_df['Grid_Power']) * step_size * results_df['Electricity_Price']))
+    grid_export_revenue   = float(np.sum(np.maximum(0, -results_df['Grid_Power']) * step_size * results_df['Electricity_Price']))
+    grid_net_cost         = float(np.sum(results_df['Grid_Power'] * step_size * results_df['Electricity_Price']))  # can be negative
+    pv_cost               = float(total_pv_used_energy * pv_energy_cost)
+    load_curtail_penalty  = float(total_load_curtailed_energy * load_curtail_cost)
+    bess_om_cost_total    = float(total_bess_discharged_energy * bess_om_cost)
+    total_energy_cost     = eng_cost_val  # objective without tiny tie-breaker
+
+    # KPIs
+    cost_per_kwh = (total_energy_cost / total_load_demand_energy) if total_load_demand_energy > 0 else np.nan
+    rtee = (100 * total_bess_discharged_energy / total_bess_charged_energy) if total_bess_charged_energy > 0 else 0.0
+
+    # Energy balance check
+    energy_in  = total_pv_used_energy + total_bess_discharged_energy + grid_import_energy
+    energy_out = total_load_served_energy + total_bess_charged_energy + grid_export_energy
+    balance_error = abs(energy_in - energy_out)
+
+    # Build formatted summary text (for Streamlit)
+    lines = []
+    lines.append("=" * 80)
+    lines.append("                      DETAILED POWER & ENERGY SUMMARY")
+    lines.append("=" * 80)
+    lines.append("")
+    lines.append("🏭 LOAD ANALYSIS:")
+    lines.append(f"   Total Base Load:              {total_base_load_energy:>10.1f} kWh")
+    lines.append(f"   Total Device Load:            {total_device_load_energy:>10.1f} kWh")
+    lines.append(f"   Total Load Demand:            {total_load_demand_energy:>10.1f} kWh")
+    load_served_pct   = (100*total_load_served_energy/total_load_demand_energy) if total_load_demand_energy > 0 else 0.0
+    load_curtail_pct  = (100*total_load_curtailed_energy/total_load_demand_energy) if total_load_demand_energy > 0 else 0.0
+    lines.append(f"   Total Load Served:            {total_load_served_energy:>10.1f} kWh ({load_served_pct:.1f}%)")
+    lines.append(f"   Total Load Curtailed:         {total_load_curtailed_energy:>10.1f} kWh ({load_curtail_pct:.1f}%)")
+    lines.append(f"   Total Cost per kWh:       ${cost_per_kwh:.4f} /kWh")
+    lines.append("")
+    lines.append("☀️ SOLAR PV ANALYSIS:")
+    lines.append(f"   Total Solar Available:        {total_solar_available_energy:>10.1f} kWh")
+    pv_used_pct      = (100*total_pv_used_energy/total_solar_available_energy) if total_solar_available_energy > 0 else 0.0
+    pv_curtail_pct   = (100*total_solar_curtailed_energy/total_solar_available_energy) if total_solar_available_energy > 0 else 0.0
+    lines.append(f"   Total PV Energy Used:         {total_pv_used_energy:>10.1f} kWh ({pv_used_pct:.1f}%)")
+    lines.append(f"   Total Solar Curtailed:        {total_solar_curtailed_energy:>10.1f} kWh ({pv_curtail_pct:.1f}%)")
+    lines.append("")
+    lines.append("🔋 BESS ANALYSIS:")
+    lines.append(f"   Energy Charged (Input):       {total_bess_charged_energy:>10.1f} kWh")
+    lines.append(f"   Energy Discharged (Output):   {total_bess_discharged_energy:>10.1f} kWh")
+    lines.append(f"   Net BESS Energy:              {total_bess_discharged_energy - total_bess_charged_energy:>10.1f} kWh")
+    lines.append(f"   BESS Round-trip Efficiency:   {rtee:>10.1f}%")
+    lines.append(f"   Initial Battery SOC:          {results_df['Battery_SOC'].iloc[0]:>10.1f}%")
+    lines.append(f"   Final  Battery SOC:           {results_df['Battery_SOC'].iloc[-1]:>10.1f}%")
+    lines.append(f"   Initial Battery Level:        {results_df['Battery_Level'].iloc[0]:>10.2f} kWh")
+    lines.append(f"   Final   Battery Level:        {results_df['Battery_Level'].iloc[-1]:>10.2f} kWh")
+    lines.append("")
+    lines.append("🔌 GRID ANALYSIS:")
+    lines.append(f"   Total Grid Import:            {grid_import_energy:>10.1f} kWh")
+    lines.append(f"   Total Grid Export:            {grid_export_energy:>10.1f} kWh")
+    net_dir = "Import" if net_grid_energy > 0 else "Export" if net_grid_energy < 0 else "Balanced"
+    lines.append(f"   Net Grid Energy:              {net_grid_energy:>10.1f} kWh ({net_dir})")
+    lines.append("")
+    lines.append("⚖️ ENERGY BALANCE VERIFICATION:")
+    lines.append(f"   Energy In:  PV({total_pv_used_energy:.1f}) + BESS_Discharge({total_bess_discharged_energy:.1f}) "
+                 f"+ Grid_Import({grid_import_energy:.1f}) = {energy_in:.1f} kWh")
+    lines.append(f"   Energy Out: Load({total_load_served_energy:.1f}) + BESS_Charge({total_bess_charged_energy:.1f}) "
+                 f"+ Grid_Export({grid_export_energy:.1f}) = {energy_out:.1f} kWh")
+    lines.append(f"   Balance Error: {balance_error:.3f} kWh ({'✓ Balanced' if balance_error < 0.1 else '⚠️ Imbalanced'})")
+    lines.append("")
+    lines.append("💰 COST BREAKDOWN:")
+    lines.append(f"   Grid Import Cost:            ${grid_import_cost:>10.2f}")
+    lines.append(f"   Grid Export Revenue:         ${grid_export_revenue:>10.2f}")
+    grid_net_label = "Revenue" if grid_net_cost < 0 else "Cost"
+    lines.append(f"   Grid Net:                    ${grid_net_cost:>10.2f} ({grid_net_label})")
+    lines.append(f"   PV Energy Cost:              ${pv_cost:>10.2f}")
+    lines.append(f"   Load Curtailment Penalty:    ${load_curtail_penalty:>10.2f}")
+    lines.append(f"   BESS O&M Cost:               ${bess_om_cost_total:>10.2f}")
+    lines.append(f"   ────────────────────────────────────────────")
+    lines.append(f"   TOTAL ENERGY COST:           ${total_energy_cost:>10.2f}")
+    lines.append(f"   TOTAL OBJECTIVE:             ${obj_val:>10.2f} (includes tiny tie-breaker)")
+
+    summary_text = "\n".join(lines)
+
+    # Build Summary DataFrame for Excel
+    summary_dict = {
+        "Total Base Load (kWh)": [total_base_load_energy],
+        "Total Device Load (kWh)": [total_device_load_energy],
+        "Total Load Demand (kWh)": [total_load_demand_energy],
+        "Total Load Served (kWh)": [total_load_served_energy],
+        "Total Load Curtailed (kWh)": [total_load_curtailed_energy],
+        "PV Available (kWh)": [total_solar_available_energy],
+        "PV Used (kWh)": [total_pv_used_energy],
+        "PV Curtailed (kWh)": [total_solar_curtailed_energy],
+        "BESS Charged (kWh)": [total_bess_charged_energy],
+        "BESS Discharged (kWh)": [total_bess_discharged_energy],
+        "Grid Import (kWh)": [grid_import_energy],
+        "Grid Export (kWh)": [grid_export_energy],
+        "Net Grid (kWh)": [net_grid_energy],
+        "Cost per kWh ($/kWh)": [cost_per_kwh],
+        "Grid Import Cost ($)": [grid_import_cost],
+        "Grid Export Revenue ($)": [grid_export_revenue],
+        "Grid Net ($)": [grid_net_cost],
+        "PV Cost ($)": [pv_cost],
+        "Curtailment Penalty ($)": [load_curtail_penalty],
+        "BESS O&M ($)": [bess_om_cost_total],
+        "Total Energy Cost ($)": [total_energy_cost],
+        "Total Objective ($)": [obj_val],
+    }
+    summary_df = pd.DataFrame(summary_dict)
 
     # -----------------------------
     # SHOW & SAVE plots
@@ -429,9 +588,9 @@ def run_optimization(
     ax2_twin.plot(x, results_df["Battery_SOC"], linewidth=2, linestyle=":", label="SOC %")
     ax2_twin.set_ylabel("State of Charge [%]")
     ax2_twin.set_ylim(0, 100)
-    lines = line1 + ax2.lines[1:3] + ax2_twin.lines
-    labels = [l.get_label() for l in lines]
-    ax2.legend(lines, labels, loc="upper left")
+    lines_ = line1 + ax2.lines[1:3] + ax2_twin.lines
+    labels = [l.get_label() for l in lines_]
+    ax2.legend(lines_, labels, loc="upper left")
     ax2.set_title("BESS Energy Level & State of Charge")
     ax2.grid(True, alpha=0.3)
     _format_time_axis(ax2)
@@ -452,32 +611,6 @@ def run_optimization(
     axes[1, 1].set_ylabel("Price [$ / kWh]")
     axes[1, 1].grid(True, alpha=0.3)
     _format_time_axis(axes[1, 1])
-
-    # # 5) BESS power
-    # axes[2, 0].plot(x, results_df["Discharge_Power"], linewidth=2, label="Discharge")
-    # axes[2, 0].plot(x, -results_df["Charge_Power"], linewidth=2, label="Charge (negative)")
-    # axes[2, 0].axhline(y=0, linestyle="--", alpha=0.5)
-    # axes[2, 0].set_title("BESS Power (+ = Discharge, - = Charge)")
-    # axes[2, 0].set_ylabel("Power [kW]")
-    # axes[2, 0].legend()
-    # axes[2, 0].grid(True, alpha=0.3)
-    # _format_time_axis(axes[2, 0])
-
-    # # 6) Device starts
-    # axes[2, 1].plot(x, results_df["Discharge_Mode"], label="BESS Discharge Mode", linewidth=2)
-    # y_mark = 0.2
-    # for dev, s in job_s_vars:
-    #     s_vals = np.array([pulp.value(s[t]) for t in T])
-    #     if s_vals.sum() > 0.5:
-    #         t0 = int(np.argmax(s_vals))
-    #         axes[2, 1].scatter([x.iloc[t0]], [y_mark], label=f"{dev['name']} start", s=80, marker="s")
-    #         y_mark += 0.2
-    # axes[2, 1].set_title("BESS Discharge & Device Start Times")
-    # axes[2, 1].set_ylabel("Binary Status")
-    # axes[2, 1].set_ylim(-0.1, 1.1)
-    # axes[2, 1].legend()
-    # axes[2, 1].grid(True, alpha=0.3)
-    # _format_time_axis(axes[2, 1])
 
     plt.tight_layout()
     plt.savefig(png_dashboard, dpi=150, bbox_inches='tight')
@@ -501,23 +634,26 @@ def run_optimization(
             plt.savefig(out_png, dpi=150, bbox_inches='tight')
             plt.close(fig2)
 
-    # Save Excel (2 sheets)
+    # Save Excel (3 sheets)
     out_xlsx  = PLOTS_DIR / f"{out_base}.xlsx"
     with pd.ExcelWriter(out_xlsx, engine="openpyxl") as xw:
         results_df.to_excel(xw, index=False, sheet_name="Timeseries")
         schedule_df.to_excel(xw, index=False, sheet_name="Schedule")
+        summary_df.to_excel(xw, index=False, sheet_name="Summary")
 
-    # Return paths for UI
+    # Return paths for UI + summary text
     png_paths = [png_dashboard] + [png_devplots[d["name"]] for d in devices]
-    return results_df, schedule_df, [str(p) for p in png_paths], str(out_xlsx)
+    return results_df, schedule_df, [str(p) for p in png_paths], str(out_xlsx), summary_text
 
 
 # ---------------------------------------------------------------------
 # Optional: quick CLI test
 # ---------------------------------------------------------------------
 if __name__ == "__main__":
-    
+
     DATA_FILE = "/home/ssingh/solar/forecasting/salt_lake_data/Load_price_2025.xlsx"
-    results_df, schedule_df, pngs, xlsx = run_optimization(DATA_FILE=DATA_FILE)
+    results_df, schedule_df, pngs, xlsx, summary_text = run_optimization(DATA_FILE=DATA_FILE)
     print("PNG files:", pngs)
     print("Excel file:", xlsx)
+    print()
+    print(summary_text)
