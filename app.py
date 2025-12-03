@@ -256,10 +256,10 @@ with right_col:
             key="wa_win",
         )
 
-    st.info(
-        "Each line in a window field should look like:\n\n"
-        "`MM-DD-YYYY HH:MM:SS, MM-DD-YYYY HH:MM:SS`"
-    )
+    # st.info(
+    #     "Each line in a window field should look like:\n\n"
+    #     "`MM-DD-YYYY HH:MM:SS, MM-DD-YYYY HH:MM:SS`"
+    # )
 
 
 # ---------- LEFT: Optimization + results ----------
