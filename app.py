@@ -20,7 +20,7 @@ except Exception:
 from optimizer import run_optimization
 
 st.set_page_config(page_title="BESS + PV Optimizer", layout="wide")
-st.title("⚡ BESS + PV Scheduling — Interactive Dashboard")
+st.title("⚡ HelioLogic")
 
 
 # ---------------------------------------------------------
